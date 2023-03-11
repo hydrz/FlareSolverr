@@ -62,7 +62,7 @@ def controller_v1():
 
 
 endpoint = os.environ.get('Endpoint', 'https://chat.openai.com/backend-api')
-maxTimeoutMilliseconds = os.environ.get('MaxTimeoutMilliseconds', 30000)
+maxTimeoutMilliseconds = os.environ.get('MaxTimeoutMilliseconds', 60000)
 
 
 @app.route('/backend-api/<path>',
