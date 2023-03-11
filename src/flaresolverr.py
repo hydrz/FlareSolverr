@@ -2,8 +2,10 @@ import json
 import logging
 import os
 import sys
+import requests
+import urllib3
 
-from bottle import run, response, Bottle, request
+from bottle import run, response, Bottle, request, LocalRequest
 
 from bottle_plugins.error_plugin import error_plugin
 from bottle_plugins.logger_plugin import logger_plugin
@@ -59,6 +61,101 @@ def controller_v1():
     return utils.object_to_dict(res)
 
 
+endpoint = os.environ.get('Endpoint', 'https://chat.openai.com/backend-api')
+maxTimeoutMilliseconds = os.environ.get('MaxTimeoutMilliseconds', 30000)
+
+
+@app.route('/backend-api/<path>',
+           method=['GET', 'POST', 'PATCH', "DELETE", "OPTIONS", "PUT"])
+def backend_api(path):
+    """
+    Reverse proxy endpoint. All requests are forwarded to https://chat.openai.com/backend-api
+    """
+
+    url = endpoint + '/' + path
+    if request.query_string:
+        url = url + '?' + request.query_string
+
+    resp = proxy(url, request)
+
+    if resp.status_code != 403:
+        logging.info(f'not need to use flaresolverr')
+        response.status = resp.status_code
+        for header in resp.headers:
+            response.set_header(header, resp.headers[header])
+        return resp.content
+
+    req = {}
+    req['url'] = url
+    req['maxTimeout'] = maxTimeoutMilliseconds
+    req['cookies'] = request.cookies
+
+    if request.method == 'GET':
+        req['cmd'] = 'request.get'
+    elif request.method == 'POST':
+        req['cmd'] = 'request.post'
+        # convert json data to application/x-www-form-urlencoded
+        if request.json is not None:
+            postData = urllib3.request.urlencode(request.json)
+            req['postData'] = postData
+    else:
+        return requests.request(request.method, url, data=request.json)
+
+    res = flaresolverr_service.controller_v1_endpoint(V1RequestBase(req))
+
+    if res.__error_500__:
+        response.status = 500
+        return
+
+    if res.status is None or res.status != 'ok':
+        response.status = 400
+        return
+
+    if res.solution is None:
+        response.status = 400
+        return
+
+    response.status = res.solution.status
+
+    for header in res.solution.headers:
+        response.set_header(header, res.solution.headers[header])
+
+    return res.solution.response
+
+
+def proxy(url, req: LocalRequest):
+    if req.method == 'GET':
+        return requests.get(url, headers=req.headers, cookies=req.cookies)
+    elif req.method == 'POST':
+        return requests.post(url,
+                             headers=req.headers,
+                             cookies=req.cookies,
+                             data=req.json)
+    elif req.method == 'PATCH':
+        return requests.patch(url,
+                              headers=req.headers,
+                              cookies=req.cookies,
+                              data=req.json)
+    elif req.method == 'DELETE':
+        return requests.delete(url,
+                               headers=req.headers,
+                               cookies=req.cookies,
+                               data=req.json)
+    elif req.method == 'OPTIONS':
+        return requests.options(url, headers=req.headers, cookies=req.cookies)
+    elif req.method == 'PUT':
+        return requests.put(url,
+                            headers=req.headers,
+                            cookies=req.cookies,
+                            data=req.json)
+    else:
+        return requests.request(req.method,
+                                url,
+                                headers=req.headers,
+                                cookies=req.cookies,
+                                data=req.json)
+
+
 if __name__ == "__main__":
     # validate configuration
     log_level = os.environ.get('LOG_LEVEL', 'info').upper()
@@ -71,17 +168,14 @@ if __name__ == "__main__":
     logger_format = '%(asctime)s %(levelname)-8s %(message)s'
     if log_level == 'DEBUG':
         logger_format = '%(asctime)s %(levelname)-8s ReqId %(thread)s %(message)s'
-    logging.basicConfig(
-        format=logger_format,
-        level=log_level,
-        datefmt='%Y-%m-%d %H:%M:%S',
-        handlers=[
-            logging.StreamHandler(sys.stdout)
-        ]
-    )
+    logging.basicConfig(format=logger_format,
+                        level=log_level,
+                        datefmt='%Y-%m-%d %H:%M:%S',
+                        handlers=[logging.StreamHandler(sys.stdout)])
     # disable warning traces from urllib3
     logging.getLogger('urllib3').setLevel(logging.ERROR)
-    logging.getLogger('selenium.webdriver.remote.remote_connection').setLevel(logging.WARNING)
+    logging.getLogger('selenium.webdriver.remote.remote_connection').setLevel(
+        logging.WARNING)
     logging.getLogger('undetected_chromedriver').setLevel(logging.WARNING)
 
     logging.info(f'FlareSolverr {utils.get_flaresolverr_version()}')
